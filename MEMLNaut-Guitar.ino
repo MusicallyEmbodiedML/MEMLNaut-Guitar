@@ -6,11 +6,13 @@
 #include "src/memllib/hardware/memlnaut/MEMLNaut.hpp"
 #include <memory>
 #include "hardware/structs/bus_ctrl.h"
-#include "PAFSynthAudioApp.hpp"
+#include "src/memllib/examples/GuitarAudioApp.hpp"
 #include "src/memllib/examples/InterfaceRL.hpp"
 
 
 #define APP_SRAM __not_in_flash("app")
+
+using AUDIO_APP_TYPE = GuitarAudioApp;
 
 bool core1_disable_systick = true;
 bool core1_separate_stack = true;
@@ -34,8 +36,8 @@ std::shared_ptr<InterfaceRL> APP_SRAM RLInterface;
 std::shared_ptr<MIDIInOut> APP_SRAM midi_interf;
 
 // Statically allocated, properly aligned storage in AUDIO_MEM for objects
-alignas(PAFSynthAudioApp) char AUDIO_MEM audio_app_mem[sizeof(PAFSynthAudioApp)];
-std::shared_ptr<PAFSynthAudioApp> __scratch_y("audio") audio_app;
+alignas(AUDIO_APP_TYPE) char AUDIO_MEM audio_app_mem[sizeof(AUDIO_APP_TYPE)];
+std::shared_ptr<AUDIO_APP_TYPE> __scratch_y("audio") audio_app;
 
 // Inter-core communication
 volatile bool APP_SRAM core_0_ready = false;
@@ -80,7 +82,7 @@ void setup()
     pinMode(33, OUTPUT);
 
     auto temp_interface = std::make_shared<InterfaceRL>();
-    temp_interface->setup(kN_InputParams, PAFSynthAudioApp::kN_Params);
+    temp_interface->setup(kN_InputParams, AUDIO_APP_TYPE::kN_Params);
     MEMORY_BARRIER();
     RLInterface = temp_interface;
     MEMORY_BARRIER();
@@ -94,12 +96,13 @@ void setup()
     midi_interf = std::make_shared<MIDIInOut>();
     midi_interf->Setup(0);
     midi_interf->SetMIDISendChannel(1);
+    RLInterface->bindMIDI(midi_interf);
     Serial.println("MIDI setup complete.");
     if (midi_interf) {
         midi_interf->SetNoteCallback([RLInterface] (bool noteon, uint8_t note_number, uint8_t vel_value) {
         if (noteon) {
             uint8_t midimsg[2] = {note_number, vel_value };
-            queue_try_add(&audio_app->qMIDINoteOn, &midimsg);
+            //queue_try_add(&audio_app->qMIDINoteOn, &midimsg);
         }
             Serial.printf("MIDI Note %d: %d\n", note_number, vel_value);
         });
@@ -119,7 +122,7 @@ void setup()
     // add_repeating_timer_ms(-39, displayUpdate, NULL, &timerDisplay);
 
     std::shared_ptr<MessageView> helpView = std::make_shared<MessageView>("Help");
-    helpView->post("PAF synth CARL");
+    helpView->post("Guitar CARL");
     helpView->post("TA: Down: Forget replay memory");
     helpView->post("MA: Up: Randomise actor");
     helpView->post("MA: Down: Randomise critic");
@@ -155,23 +158,25 @@ void loop()
 }
 
 
-// void AUDIO_FUNC(audio_block_callback)(float in[][kBufferSize], float out[][kBufferSize], size_t n_channels, size_t n_frames)
-// {
-//     // digitalWrite(Pins::LED, HIGH);
-//     for (size_t i = 0; i < n_frames; ++i) {
+void AUDIO_FUNC(audio_block_callback)(float in[][kBufferSize], float out[][kBufferSize], size_t n_channels, size_t n_frames)
+{
+    // digitalWrite(Pins::LED, HIGH);
+    for (size_t i = 0; i < n_frames; ++i) {
 
-//         float y = in[0][i];
+        stereosample_t y;
+        y.L = in[0][i];
+        y.R = in[1][i];
 
-//         // Audio processing
-//         if (audio_app) {
-//             y = audio_app->ProcessLean();
-//         }
+        // Audio processing
+        if (audio_app) {
+            y = audio_app->ProcessInline(y);
+        }
 
-//         out[0][i] = y;
-//         out[1][i] = y;
-//     }
-//     // digitalWrite(Pins::LED, LOW);
-// }
+        out[0][i] = y.L;
+        out[1][i] = y.R;
+    }
+    // digitalWrite(Pins::LED, LOW);
+}
 
 
 void setup1()
@@ -189,12 +194,12 @@ void setup1()
 
     // Create audio app with memory barrier protection
     {
-        PAFSynthAudioApp* audio_raw = new (audio_app_mem) PAFSynthAudioApp();
+        AUDIO_APP_TYPE* audio_raw = new (audio_app_mem) AUDIO_APP_TYPE();
         audio_raw->Setup(AudioDriver::GetSampleRate(), RLInterface);
 
         // shared_ptr with custom deleter calling only the destructor (control block still allocates)
-        auto audio_deleter = [](PAFSynthAudioApp* p) { if (p) p->~PAFSynthAudioApp(); };
-        std::shared_ptr<PAFSynthAudioApp> temp_audio_app(audio_raw, audio_deleter);
+        auto audio_deleter = [](AUDIO_APP_TYPE* p) { if (p) p->~AUDIO_APP_TYPE(); };
+        std::shared_ptr<AUDIO_APP_TYPE> temp_audio_app(audio_raw, audio_deleter);
 
         MEMORY_BARRIER();
         audio_app = temp_audio_app;
@@ -204,7 +209,7 @@ void setup1()
     // AudioDriver::SetBlockCallback(audio_block_callback);
     // Start audio driver
     AudioDriver::Setup();
-    // AudioDriver::SetBlockCallback(audio_block_callback);
+    AudioDriver::SetBlockCallback(audio_block_callback);
 
 
     WRITE_VOLATILE(core_1_ready, true);
