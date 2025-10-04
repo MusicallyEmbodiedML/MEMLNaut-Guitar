@@ -48,7 +48,7 @@ volatile bool APP_SRAM interface_ready = false;
 
 
 // We're only bound to the joystick inputs (x, y, rotate)
-constexpr size_t kN_InputParams = 3;
+constexpr size_t kN_InputParams = 2;
 
 // Add these macros near other globals
 #define MEMORY_BARRIER() __sync_synchronize()
@@ -90,13 +90,42 @@ void setup()
     // Setup interface with memory barrier protection
     WRITE_VOLATILE(interface_ready, true);
     // Bind interface after ensuring it's fully initialized
-    RLInterface->bind_RL_interface();
+    RLInterface->bind_RL_interface(true);
     // Serial.println("Bound RL interface to MEMLNaut.");
 
     midi_interf = std::make_shared<MIDIInOut>();
     midi_interf->Setup(0);
     midi_interf->SetMIDISendChannel(1);
-    RLInterface->bindMIDI(midi_interf);
+    RLInterface->bindMIDI(midi_interf, [RLInterface] (uint8_t n, uint8_t v) {
+
+        static constexpr float cc_scale = 1.f/(127.f-20.f);
+        // Less than 20 on cc_value is considered 0
+        // scale [20..127] to [0.0, 1.0]
+        if (v < 20) {
+            v = 20;
+        }
+        v -= 20; // Shift range to [0, 107]
+        float adj_v = static_cast<float>(v) * cc_scale;
+        if (adj_v > 1.f) adj_v = 1.f;
+        if (adj_v < 0.f) adj_v = 0.f;
+
+        if (n == 7) { // Example CC number for custom action
+            //Serial.printf("Custom MIDI CC %d: %d\n", n, v);
+            // Perform custom action here
+            RLInterface->setState(0, adj_v); // Example: set first input state
+        } else if (n == 8) {
+            //Serial.printf("Custom MIDI CC %d: %d\n", n, v);
+            // Perform another custom action here
+            RLInterface->setState(1, adj_v); // Example: set second input state
+        } else if (n == 9) {
+            //Serial.printf("Custom MIDI CC %d: %d\n", n, v);
+            // Perform yet another custom action here
+            if (audio_app) {
+                audio_app->switch_mode = !(audio_app->switch_mode);
+            }
+            Serial.printf("Switch mode: %s\n", audio_app->switch_mode ? "ON" : "OFF");
+        }
+    });
     Serial.println("MIDI setup complete.");
     if (midi_interf) {
         midi_interf->SetNoteCallback([RLInterface] (bool noteon, uint8_t note_number, uint8_t vel_value) {
